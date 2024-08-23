@@ -11,9 +11,8 @@ from plyer import notification
 import threading
 from bs4 import BeautifulSoup
 from random import choice
-import requests
-import threading
-
+import speech_recognition as sr
+from googlesearch import search
 
 # Define USER and BOTNAME
 USERNAME = 'Sir'
@@ -23,6 +22,11 @@ BOTNAME = 'Jarvis'
 engine = pyttsx3.init('sapi5')
 voices = engine.getProperty('voices')
 engine.setProperty('voice', voices[0].id)  # Female voice
+
+# Global variables to keep track of the assistant's state
+assistant_active = True
+stop_listening = threading.Event()
+stop_listening.set()  # Initially, the assistant is listening for the wake word
 
 def speak(text):
     """Converts text to speech"""
@@ -41,7 +45,6 @@ def greet_user():
     else:
         greeting = f"Good Night {USERNAME}"
     speak(f"{greeting}")
-    speak(get_weather('Alter'))
 
 def get_weather(city):
     coordinates = {
@@ -141,6 +144,7 @@ def web_search(query):
 def get_news():
     """Fetches latest news headlines using News API"""
     api_key = 'acc3b242b619422896ef92dfd8f7043f'  # Replace with your News API key
+    
     url = f'https://newsapi.org/v2/top-headlines?country=us&apiKey={api_key}'
     
     try:
@@ -231,29 +235,18 @@ def manage_tasks(command):
         if not os.path.exists(task_file):
             return "No tasks file found."
         
-        # Read the tasks from the file
         with open(task_file, 'r') as file:
             tasks = file.readlines()
 
-        # Remove the task from the list if it exists
-        with open(task_file, 'w') as file:
-            task_found = False
-            for t in tasks:
-                if t.strip() == task:
-                    task_found = True
-                    continue  # Skip writing this task
-                file.write(t)  # Write other tasks back to the file
-
-        if task_found:
-            if task=="sleep":
-                return f"Congrats sir I hope you slept well I've removed the task for you."
-            else:
-                return f"Task '{task}' has been marked as complete."
+        if task + '\n' in tasks:
+            tasks.remove(task + '\n')
+            with open(task_file, 'w') as file:
+                file.writelines(tasks)
+            return f"Task '{task}' marked as complete."
         else:
-            return "Task not found."
-
-    else:
-        return "I can only add, list, or complete tasks. Please use 'add task', 'list tasks', or 'complete task'."
+            return f"Task '{task}' not found in your to-do list."
+    
+    return "Sorry, I didn't understand your task management request."
 
 def get_summary(term):
     """Fetches a concise summary of a term from Wikipedia"""
@@ -267,12 +260,39 @@ def get_summary(term):
     except Exception as e:
         return f"Error retrieving summary: {str(e)}"
 
-def take_user_input():
-    """Takes user input from the command line"""
-    return input("Enter your command: ")
+def listen_for_wake_word():
+    """Listens for the wake word to activate the assistant"""
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        print("Listening for wake word...")
+        while True:
+            try:
+                recognizer.pause_threshold = 1.5  # Adjust this as needed
+                audio = recognizer.listen(source)
+
+                query = recognizer.recognize_google(audio, language='en-US').lower()
+                print('Detected query:', query)
+
+                if 'hey jarvis' in query:
+                    speak("Hello Sir, how can I assist you?")
+                    stop_listening.clear()  # Stop listening for wake word
+                    global assistant_active
+                    assistant_active = True
+                    return
+            except sr.UnknownValueError:
+                continue
+            except sr.RequestError as e:
+                print(f"Could not request results from Google Speech Recognition service; {e}")
+                speak("Sorry, I'm having trouble connecting to the speech recognition service.")
+                continue
+            except Exception as e:
+                print(f"Error occurred: {e}")
+                speak("Sorry, something went wrong.")
+                continue
 
 def execute_command(command):
-    """Executes the command based on the user input"""
+    global assistant_active  # Declare global at the start of the function
+    
     if 'time' in command:
         return datetime.now().strftime("The time is %H:%M:%S")
     elif 'weather' in command:
@@ -317,26 +337,66 @@ def execute_command(command):
         return convert_units(command)
     elif 'task' in command:
         return manage_tasks(command)
-    elif 'what is' in command or 'who is' in command:
-        if 'what is' in command:
-            term = command.split('what is')[-1].strip()
-        else:
-            term = command.split('who is')[-1].strip()
-        return get_summary(term)
     elif 'thanks' in command or 'thank you' in command:
         return f'You are welcome {USERNAME}'
+    elif 'jarvis sleep' in command:
+        assistant_active = False  # Modify the global variable here
+        stop_listening.set()  # Start listening for the wake word again
+        return "Going to sleep. Say 'Hey Jarvis' to wake me up."
+    elif 'jarvis wake up' in command:
+        assistant_active = True  # Modify the global variable here
+        stop_listening.clear()  # Stop listening for the wake word
+        return "I'm awake. How can I assist you?"
     else:
-        return "Sorry, I didn't understand that command."
+        try:
+            results = search(command)  # Adjust the number of results as needed
+            result_texts = []
+            for result in results:
+                result_texts.append(f"Title: {result.title}\nURL: {result.url}\nSnippet: {result.snippet}\n")
+            return "\n".join(result_texts)
+        except Exception as e:
+            return f"An error occurred: {e}"
+
+def take_user_input():
+    """Takes user input through speech"""
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        print("Listening...")
+        recognizer.pause_threshold = 1.5  # Adjust this as needed
+        audio = recognizer.listen(source)
+
+    try:
+        print("Recognizing...")
+        query = recognizer.recognize_google(audio, language='en-US')
+        print(f"User said: {query}")
+    except sr.UnknownValueError:
+        print("Google Speech Recognition could not understand the audio.")
+        speak("Sorry, I did not catch that. Could you please repeat?")
+        return None
+    except sr.RequestError as e:
+        print(f"Could not request results from Google Speech Recognition service; {e}")
+        speak("Sorry, I'm having trouble connecting to the speech recognition service.")
+        return None
+    except Exception as e:
+        print(f"Error occurred: {e}")
+        speak("Sorry, something went wrong.")
+        return None
+
+    return query.lower()
 
 def main():
     greet_user()
+    global stop_listening
     while True:
-        command = take_user_input()
-        if command:
-            response = execute_command(command)
-            if response:
-                speak(response)
-                print(response)
+        if stop_listening.is_set():
+            listen_for_wake_word()
+        elif not stop_listening.is_set() and assistant_active:
+            command = take_user_input()
+            if command:
+                response = execute_command(command)
+                if response:
+                    print(response)
+                    speak(response)
 
 if __name__ == "__main__":
     main()
